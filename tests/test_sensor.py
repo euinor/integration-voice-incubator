@@ -1,414 +1,201 @@
-"""Tests for the modular Voice Incubator timer sensor platform."""
+"""Timer sensors: each timer on a voice_timer_list as a sensor of its own."""
 
-from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
 
-import pytest
-from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import ATTR_DEVICE_CLASS, ATTR_ENTITY_ID
+from freezegun.api import FrozenDateTimeFactory
+
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.voice_incubator.const import (
-    CONF_EXPOSE_TIMER_SENSORS,
-    DOMAIN,
-    SIGNAL_TIMERS_UPDATED,
-)
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
-
-def _make_timer(
-    timer_id: str = "01M7J7CPR7MY4X39T2NXZC2EZ8",
-    name: str | None = "Pasta",
-    status: str = "active",
-    created_duration: int = 600,
-    total_duration: int = 600,
-    remaining: float = 540.0,
-    created_at: datetime | None = None,
-    finishes_at: datetime | None = None,
-    ended_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a canonical Voice Incubator timer payload."""
-    now = created_at or dt_util.utcnow()
-    if status == "active" and finishes_at is None:
-        finishes_at = now + timedelta(seconds=remaining)
-    if status in ("finished", "cancelled") and ended_at is None:
-        ended_at = now
-
-    return {
-        "timer_id": timer_id,
-        "name": name,
-        "status": status,
-        "created_duration": created_duration,
-        "total_duration": total_duration,
-        "created_at": now.isoformat(),
-        "finishes_at": finishes_at.isoformat() if finishes_at else None,
-        "ended_at": ended_at.isoformat() if ended_at else None,
-        "remaining": remaining,
-    }
+DOMAIN = "voice_incubator"
+KITCHEN = "voice_timer_list.kitchen_timers"
 
 
-def _seed_timer_list(
-    hass: HomeAssistant,
-    list_entity_id: str,
-    timers: list[dict[str, Any]],
-) -> None:
-    """Attach test timers to the in-memory voice_timer_list store and notify listeners.
-
-    Note for coding agent: align the attribute/lookup path below with the
-    concrete VoiceTimerList entity/manager storage in `voice_timer_list.py`.
-    """
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    timer_lists = domain_data.setdefault("timer_lists", {})
-    timer_list = timer_lists.get(list_entity_id)
-    if timer_list is not None:
-        timer_list.timers = list(timers)
-    async_dispatcher_send(hass, SIGNAL_TIMERS_UPDATED, list_entity_id)
-
-
-@pytest.fixture
-async def setup_integration(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up a loaded Voice Incubator config entry with timer sensors enabled."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Voice Incubator",
-        data={},
-        options={CONF_EXPOSE_TIMER_SENSORS: True},
-    )
+async def _setup(hass: HomeAssistant, **options: Any) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, title="Voice Incubator", options=options)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
 
 
-@pytest.mark.asyncio
-async def test_timer_sensor_creation_named_and_unnamed(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    setup_integration: MockConfigEntry,
+async def _sync(client, satellites: list[dict]) -> list[dict]:
+    await client.send_json_auto_id({"type": "voice_incubator/satellites/sync", "satellites": satellites})
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    return msg["result"]["satellites"]
+
+
+async def _kitchen(hass: HomeAssistant, hass_ws_client: WebSocketGenerator, **options: Any) -> tuple[MockConfigEntry, str]:
+    """A satellite in the Kitchen, so its timers are on the Kitchen's list."""
+    kitchen = ar.async_get(hass).async_create("Kitchen")
+    entry = await _setup(hass, **options)
+    client = await hass_ws_client(hass)
+    [satellite] = await _sync(client, [{"id": "one", "name": "Counter"}])
+    dr.async_get(hass).async_update_device(satellite["device_id"], area_id=kitchen.id)
+    await hass.async_block_till_done()
+    [satellite] = await _sync(client, [{"id": "one", "name": "Counter"}])
+    assert satellite["timer_list"] == KITCHEN
+    return entry, kitchen.id
+
+
+async def _timer(hass: HomeAssistant, service: str, data: dict[str, Any], entity_id: str = KITCHEN) -> Any:
+    response = await hass.services.async_call(
+        "voice_timer_list",
+        service,
+        {"entity_id": entity_id, **data},
+        blocking=True,
+        return_response=service == "create_timer",
+    )
+    await hass.async_block_till_done()
+    return response[entity_id]["timer_id"] if response else None
+
+
+async def test_a_timer_is_a_timestamp_sensor(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    _, area_id = await _kitchen(hass, hass_ws_client)
+    timer_id = await _timer(hass, "create_timer", {"name": "Pasta", "duration": {"minutes": 10}})
+    await _timer(hass, "create_timer", {"duration": {"minutes": 1, "seconds": 30}})
+
+    pasta = hass.states.get("sensor.kitchen_timers_1")
+    assert pasta.name == "Pasta"
+    assert pasta.attributes["device_class"] == "timestamp"
+    finishes_at = dt_util.parse_datetime(pasta.attributes["finishes_at"])
+    assert dt_util.parse_datetime(pasta.state) == finishes_at.replace(microsecond=0)  # The state is to the second.
+    assert pasta.attributes["timer_id"] == timer_id
+    assert pasta.attributes["status"] == "active"
+    assert pasta.attributes["created_duration"] == 600
+    assert pasta.attributes["timer_list"] == KITCHEN
+    assert pasta.attributes["icon"] == "mdi:timer-outline"
+    assert er.async_get(hass).async_get("sensor.kitchen_timers_1").area_id == area_id
+
+    assert hass.states.get("sensor.kitchen_timers_2").name == "1 min 30 s timer"
+
+
+async def test_time_changes_pause_and_resume(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    await _kitchen(hass, hass_ws_client)
+    timer_id = await _timer(hass, "create_timer", {"name": "Eggs", "duration": {"minutes": 5}})
+    started = dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state)
+
+    await _timer(hass, "add_time", {"timer_id": timer_id, "duration": {"minutes": 1}})
+    assert dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state) == started + timedelta(minutes=1)
+    await _timer(hass, "subtract_time", {"timer_id": timer_id, "duration": {"minutes": 2}})
+    assert dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state) == started - timedelta(minutes=1)
+
+    await _timer(hass, "pause_timer", {"timer_id": timer_id})
+    paused = hass.states.get("sensor.kitchen_timers_1")
+    assert paused.state == "paused"
+    assert paused.attributes["device_class"] == "enum"
+    assert paused.attributes["paused_remaining"] > 0
+    assert paused.attributes["icon"] == "mdi:timer-pause-outline"
+
+    await _timer(hass, "unpause_timer", {"timer_id": timer_id})
+    resumed = hass.states.get("sensor.kitchen_timers_1")
+    assert resumed.attributes["device_class"] == "timestamp"
+    assert dt_util.parse_datetime(resumed.state) is not None
+
+
+async def test_ended_timers_stay_for_the_retention_minutes(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, freezer: FrozenDateTimeFactory
 ) -> None:
-    """Test creating TIMESTAMP sensors for named and unnamed active timers."""
-    list_entity_id = "voice_timer_list.kitchen_timers"
-    now = datetime(2026, 11, 18, 12, 0, 0, tzinfo=timezone.utc)
-    finishes_named = now + timedelta(minutes=10)
-    finishes_unnamed = now + timedelta(seconds=45)
+    await _kitchen(hass, hass_ws_client, retention_minutes=5)
+    entities = er.async_get(hass)
+    await _timer(hass, "create_timer", {"name": "Tea", "duration": {"minutes": 3}})
+    toast = await _timer(hass, "create_timer", {"name": "Toast", "duration": {"minutes": 10}})
 
-    timers = [
-        _make_timer(
-            timer_id="01TIMER_NAMED",
-            name="Pasta",
-            status="active",
-            created_duration=600,
-            total_duration=600,
-            remaining=600.0,
-            created_at=now,
-            finishes_at=finishes_named,
-        ),
-        _make_timer(
-            timer_id="01TIMER_UNNAMED",
-            name=None,
-            status="active",
-            created_duration=45,
-            total_duration=45,
-            remaining=45.0,
-            created_at=now,
-            finishes_at=finishes_unnamed,
-        ),
-    ]
-
-    _seed_timer_list(hass, list_entity_id, timers)
+    freezer.tick(timedelta(minutes=3, seconds=1))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
+    assert hass.states.get("sensor.kitchen_timers_1").state == "finished"
+    await _timer(hass, "cancel_timer", {"timer_id": toast})
+    assert hass.states.get("sensor.kitchen_timers_2").state == "cancelled"
 
-    named_reg = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_01TIMER_NAMED"
-    )
-    unnamed_reg = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_01TIMER_UNNAMED"
-    )
-    assert named_reg is not None
-    assert unnamed_reg is not None
-
-    named_state = hass.states.get(named_reg)
-    assert named_state is not None
-    assert named_state.name == "Pasta"
-    assert named_state.attributes[ATTR_DEVICE_CLASS] == SensorDeviceClass.TIMESTAMP
-    assert dt_util.parse_datetime(named_state.state) == finishes_named
-    assert named_state.attributes["timer_id"] == "01TIMER_NAMED"
-    assert named_state.attributes["status"] == "active"
-    assert named_state.attributes["list_entity_id"] == list_entity_id
-
-    unnamed_state = hass.states.get(unnamed_reg)
-    assert unnamed_state is not None
-    assert unnamed_state.name == "45s Timer"
-    assert unnamed_state.attributes[ATTR_DEVICE_CLASS] == SensorDeviceClass.TIMESTAMP
-    assert dt_util.parse_datetime(unnamed_state.state) == finishes_unnamed
-
-
-@pytest.mark.asyncio
-async def test_timer_sensor_timestamp_updates_and_lifecycle_transitions(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    setup_integration: MockConfigEntry,
-) -> None:
-    """Test updating finishes_at and transitioning across active, paused, and finished."""
-    list_entity_id = "voice_timer_list.kitchen_timers"
-    timer_id = "01TIMER_LIFECYCLE"
-    base_time = datetime(2026, 11, 18, 12, 0, 0, tzinfo=timezone.utc)
-    initial_finish = base_time + timedelta(minutes=5)
-
-    # 1. Active state
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [_make_timer(timer_id=timer_id, name="Eggs", finishes_at=initial_finish)],
-    )
+    freezer.tick(timedelta(minutes=4))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
-
-    sensor_entity_id = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_{timer_id}"
-    )
-    assert sensor_entity_id is not None
-    state = hass.states.get(sensor_entity_id)
-    assert state is not None
-    assert dt_util.parse_datetime(state.state) == initial_finish
-
-    # 2. Adjusted timestamp (+1 minute)
-    extended_finish = initial_finish + timedelta(minutes=1)
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [
-            _make_timer(
-                timer_id=timer_id,
-                name="Eggs",
-                total_duration=360,
-                remaining=360.0,
-                finishes_at=extended_finish,
-            )
-        ],
-    )
+    assert hass.states.get("sensor.kitchen_timers_2").state == "cancelled"
+    freezer.tick(timedelta(minutes=1, seconds=1))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
+    assert hass.states.get("sensor.kitchen_timers_1") is None
+    assert entities.async_get("sensor.kitchen_timers_1") is None
 
-    state = hass.states.get(sensor_entity_id)
-    assert state is not None
-    assert state.attributes[ATTR_DEVICE_CLASS] == SensorDeviceClass.TIMESTAMP
-    assert dt_util.parse_datetime(state.state) == extended_finish
-
-    # 3. Paused state (clears TIMESTAMP device_class so UI stops counting down)
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [
-            _make_timer(
-                timer_id=timer_id,
-                name="Eggs",
-                status="paused",
-                remaining=215.0,
-                finishes_at=None,
-            )
-        ],
-    )
-    await hass.async_block_till_done()
-
-    state = hass.states.get(sensor_entity_id)
-    assert state is not None
-    assert state.state == "paused"
-    assert ATTR_DEVICE_CLASS not in state.attributes
-    assert state.attributes["remaining"] == 215.0
-
-    # 4. Finished state (retained in list window)
-    ended_time = base_time + timedelta(minutes=6)
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [
-            _make_timer(
-                timer_id=timer_id,
-                name="Eggs",
-                status="finished",
-                remaining=0.0,
-                finishes_at=None,
-                ended_at=ended_time,
-            )
-        ],
-    )
-    await hass.async_block_till_done()
-
-    state = hass.states.get(sensor_entity_id)
-    assert state is not None
-    assert state.state == "finished"
-    assert ATTR_DEVICE_CLASS not in state.attributes
-    assert state.attributes["ended_at"] == ended_time.isoformat()
+    # Removed from its list: gone at once.
+    await _timer(hass, "remove_timer", {"timer_id": toast})
+    assert hass.states.get("sensor.kitchen_timers_2") is None
+    assert entities.async_get("sensor.kitchen_timers_2") is None
 
 
-@pytest.mark.asyncio
-async def test_entity_registry_cleanup_on_cancel_prune_and_startup(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    setup_integration: MockConfigEntry,
-) -> None:
-    """Test cancelled, pruned, and orphaned timer sensors are purged from EntityRegistry."""
-    list_entity_id = "voice_timer_list.kitchen_timers"
+async def test_slots_are_reused(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    await _kitchen(hass, hass_ws_client, retention_minutes=0)
+    entities = er.async_get(hass)
+    first = await _timer(hass, "create_timer", {"name": "One", "duration": {"minutes": 5}})
+    await _timer(hass, "create_timer", {"name": "Two", "duration": {"minutes": 5}})
+    assert hass.states.get("sensor.kitchen_timers_2").name == "Two"
 
-    # Pre-seed an orphaned registry entry from before reload/restart
-    orphan_entry = entity_registry.async_get_or_create(
-        "sensor",
-        DOMAIN,
-        f"{setup_integration.entry_id}_01ORPHAN_TIMER",
-        config_entry=setup_integration,
-    )
-    await hass.config_entries.async_reload(setup_integration.entry_id)
-    await hass.async_block_till_done()
-    assert entity_registry.async_get(orphan_entry.entity_id) is None
-
-    # Create two active timers
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [
-            _make_timer(timer_id="01KEEP_ME", name="Tea"),
-            _make_timer(timer_id="01CANCEL_ME", name="Toast"),
-        ],
-    )
-    await hass.async_block_till_done()
-
-    cancel_entity_id = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_01CANCEL_ME"
-    )
-    keep_entity_id = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_01KEEP_ME"
-    )
-    assert cancel_entity_id is not None
-    assert keep_entity_id is not None
-
-    # Mark Toast as cancelled -> must disappear immediately from state and registry
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [
-            _make_timer(timer_id="01KEEP_ME", name="Tea"),
-            _make_timer(timer_id="01CANCEL_ME", name="Toast", status="cancelled"),
-        ],
-    )
-    await hass.async_block_till_done()
-
-    assert hass.states.get(cancel_entity_id) is None
-    assert entity_registry.async_get(cancel_entity_id) is None
-    assert hass.states.get(keep_entity_id) is not None
-
-    # Prune Tea completely from the list -> must also disappear from state and registry
-    _seed_timer_list(hass, list_entity_id, [])
-    await hass.async_block_till_done()
-
-    assert hass.states.get(keep_entity_id) is None
-    assert entity_registry.async_get(keep_entity_id) is None
+    for _ in range(3):
+        await _timer(hass, "cancel_timer", {"timer_id": first})
+        assert hass.states.get("sensor.kitchen_timers_1") is None
+        first = await _timer(hass, "create_timer", {"name": "Again", "duration": {"minutes": 5}})
+        assert hass.states.get("sensor.kitchen_timers_1").name == "Again"
+    assert hass.states.get("sensor.kitchen_timers_3") is None
+    assert len([k for k in entities.deleted_entities if k[0] == "sensor"]) <= 2
 
 
-@pytest.mark.asyncio
-async def test_service_delegation_targeting_sensor_entity(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    setup_integration: MockConfigEntry,
-) -> None:
-    """Test timer control services resolve sensor targets to (list_entity_id, timer_id)."""
-    list_entity_id = "voice_timer_list.kitchen_timers"
-    timer_id = "01SERVICE_TARGET"
+async def test_options_apply_without_losing_timers(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    entry, _ = await _kitchen(hass, hass_ws_client)
+    await _timer(hass, "create_timer", {"name": "Rice", "duration": {"minutes": 15}})
+    assert hass.states.get("sensor.kitchen_timers_1") is not None
 
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [_make_timer(timer_id=timer_id, name="Roast")],
-    )
-    await hass.async_block_till_done()
-
-    sensor_entity_id = entity_registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{setup_integration.entry_id}_{timer_id}"
-    )
-    assert sensor_entity_id is not None
-
-    # Patch the underlying timer list action dispatcher/handler to verify delegation
-    with patch(
-        "custom_components.voice_incubator.voice_timer_list.async_handle_timer_action",
-        new_callable=AsyncMock,
-    ) as mock_handler:
-        await hass.services.async_call(
-            DOMAIN,
-            "adjust_timer",
-            {ATTR_ENTITY_ID: sensor_entity_id, "seconds": 60},
-            blocking=True,
-        )
-        mock_handler.assert_awaited_once_with(
-            hass,
-            action="adjust_timer",
-            list_entity_id=list_entity_id,
-            timer_id=timer_id,
-            seconds=60,
-        )
-
-        mock_handler.reset_mock()
-        await hass.services.async_call(
-            DOMAIN,
-            "cancel_timer",
-            {ATTR_ENTITY_ID: sensor_entity_id},
-            blocking=True,
-        )
-        mock_handler.assert_awaited_once_with(
-            hass,
-            action="cancel_timer",
-            list_entity_id=list_entity_id,
-            timer_id=timer_id,
-        )
-
-
-@pytest.mark.asyncio
-async def test_options_flow_toggle_disables_and_purges_sensors(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    setup_integration: MockConfigEntry,
-) -> None:
-    """Test toggling expose_timer_sensors off purges sensors and toggling on restores them."""
-    list_entity_id = "voice_timer_list.kitchen_timers"
-    timer_id = "01OPT_TOGGLE"
-
-    _seed_timer_list(
-        hass,
-        list_entity_id,
-        [_make_timer(timer_id=timer_id, name="Rice")],
-    )
-    await hass.async_block_till_done()
-
-    unique_id = f"{setup_integration.entry_id}_{timer_id}"
-    sensor_entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-    assert sensor_entity_id is not None
-
-    # Disable individual timer sensors via Options Flow
-    result = await hass.config_entries.options.async_init(setup_integration.entry_id)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={CONF_EXPOSE_TIMER_SENSORS: False},
+        flow["flow_id"], {"expose_timer_sensors": False, "retention_minutes": 5}
     )
     await hass.async_block_till_done()
-
     assert result["type"] == "create_entry"
-    assert setup_integration.options[CONF_EXPOSE_TIMER_SENSORS] is False
-    assert hass.states.get(sensor_entity_id) is None
-    assert entity_registry.async_get(sensor_entity_id) is None
+    assert hass.states.get("sensor.kitchen_timers_1") is None
+    assert er.async_get(hass).async_get("sensor.kitchen_timers_1") is None
+    assert hass.states.get(KITCHEN).state == "1"  # Still running: no reload.
 
-    # Re-enable individual timer sensors via Options Flow
-    result = await hass.config_entries.options.async_init(setup_integration.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={CONF_EXPOSE_TIMER_SENSORS: True},
-    )
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    await hass.config_entries.options.async_configure(flow["flow_id"], {"expose_timer_sensors": True, "retention_minutes": 5})
     await hass.async_block_till_done()
+    assert hass.states.get("sensor.kitchen_timers_1").name == "Rice"
 
-    assert result["type"] == "create_entry"
-    assert setup_integration.options[CONF_EXPOSE_TIMER_SENSORS] is True
-    restored_entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-    assert restored_entity_id is not None
-    assert hass.states.get(restored_entity_id) is not None
+
+async def test_stale_timer_sensors_are_removed_at_setup(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, title="Voice Incubator")
+    entry.add_to_hass(hass)
+    entities = er.async_get(hass)
+    stale = entities.async_get_or_create("sensor", DOMAIN, "area_kitchen_timers_timer_1", config_entry=entry)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entities.async_get(stale.entity_id) is None
+
+
+async def test_a_lists_sensors_go_with_it(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    kitchen = ar.async_get(hass).async_create("Kitchen")
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+    [satellite] = await _sync(client, [{"id": "one", "name": "Counter"}])
+    own = satellite["timer_list"]
+    await _timer(hass, "create_timer", {"name": "Desk", "duration": {"minutes": 5}}, entity_id=own)
+    sensor = hass.states.get("sensor.counter_timers_1")
+    assert sensor.name == "Counter Desk"  # On the satellite's device.
+
+    # Into an area: its own list goes, and its timers' sensors with it.
+    dr.async_get(hass).async_update_device(satellite["device_id"], area_id=kitchen.id)
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.counter_timers_1") is None
+    assert er.async_get(hass).async_get("sensor.counter_timers_1") is None
+
+    # Unloaded: nothing left behind.
+    await _timer(hass, "create_timer", {"duration": {"minutes": 5}})
+    assert hass.states.get("sensor.kitchen_timers_1") is not None
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert er.async_get(hass).async_get("sensor.kitchen_timers_1") is None
