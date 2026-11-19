@@ -758,6 +758,70 @@ Both options are on the integration's **Configure** page (Settings > Devices
 finished timers** (5 minutes by default, or 0 to remove them at once).
 Changing either doesn't touch the timers that are running.
 
+A timer sensor has the voice commands' actions: `voice_incubator.pause_timer`,
+`resume_timer`, `cancel_timer`, `add_time` and `subtract_time` (with a
+`duration`), aimed at the sensor. They act on the timer itself, so the
+satellites follow as if it had been said. A card with buttons for the first
+timer in the Kitchen, shown while there is one:
+
+```yaml
+type: conditional
+conditions:
+  - condition: state
+    entity: sensor.kitchen_timers_1
+    state_not: unavailable
+card:
+  type: vertical-stack
+  cards:
+    - type: tile
+      entity: sensor.kitchen_timers_1
+    - type: horizontal-stack
+      cards:
+        - type: button
+          icon: mdi:pause
+          tap_action:
+            action: perform-action
+            perform_action: voice_incubator.pause_timer
+            target:
+              entity_id: sensor.kitchen_timers_1
+        - type: button
+          icon: mdi:play
+          tap_action:
+            action: perform-action
+            perform_action: voice_incubator.resume_timer
+            target:
+              entity_id: sensor.kitchen_timers_1
+        - type: button
+          icon: mdi:plus
+          name: 1 min
+          tap_action:
+            action: perform-action
+            perform_action: voice_incubator.add_time
+            target:
+              entity_id: sensor.kitchen_timers_1
+            data:
+              duration:
+                minutes: 1
+        - type: button
+          icon: mdi:minus
+          name: 1 min
+          tap_action:
+            action: perform-action
+            perform_action: voice_incubator.subtract_time
+            target:
+              entity_id: sensor.kitchen_timers_1
+            data:
+              duration:
+                minutes: 1
+        - type: button
+          icon: mdi:close
+          tap_action:
+            action: perform-action
+            perform_action: voice_incubator.cancel_timer
+            target:
+              entity_id: sensor.kitchen_timers_1
+```
+
 ### Alarms and reminders
 
 Alarms and reminders with a time are events on a **Local

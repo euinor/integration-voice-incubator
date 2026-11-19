@@ -7,7 +7,13 @@ numbered slots (``sensor.kitchen_timers_1``, ``_2`` ...), freed when the timer
 goes, so entity ids stay put and the entity registry stays small. A finished
 or cancelled timer stays for the options' retention minutes.
 
-To remove the feature: delete this file, Platform.SENSOR and the options flow.
+Each sensor can also be controlled (``voice_incubator.pause_timer`` and the
+rest, below): the voice_timer_list actions, aimed at a sensor instead of a list
+and a timer id, for dashboard buttons. They call the list, whose change reaches
+the app and the sensor alike.
+
+To remove the feature: delete this file, Platform.SENSOR, async_setup_services,
+the options flow and services.yaml's actions.
 """
 
 from __future__ import annotations
@@ -17,10 +23,12 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback, split_entity_id
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import config_validation as cv, entity_registry as er, service
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
     EntityPlatform,
@@ -56,6 +64,16 @@ ICONS = {
     TimerStatus.CANCELLED: "mdi:timer-cancel-outline",
 }
 
+DURATION = {vol.Required("duration"): cv.positive_time_period}
+SERVICES: dict[str, tuple[dict, str]] = {
+    "pause_timer": ({}, "async_pause"),
+    "resume_timer": ({}, "async_resume"),
+    "cancel_timer": ({}, "async_cancel"),
+    "add_time": (DURATION, "async_add_time"),
+    "subtract_time": (DURATION, "async_subtract_time"),
+}
+"""Each action on a timer sensor, and the sensor's method it calls."""
+
 type Key = tuple[str, str]
 """A timer sensor's list entity id and timer id."""
 
@@ -72,6 +90,15 @@ async def async_setup_entry(
         if registered.domain == "sensor" and SLOT_UNIQUE_ID.search(registered.unique_id):
             entities.async_remove(registered.entity_id)
     TimerSensors(hass, entry, async_get_current_platform()).async_start()
+
+
+@callback
+def async_setup_services(hass: HomeAssistant) -> None:
+    """The timer sensors' actions, there before any entry is set up."""
+    for name, (schema, method) in SERVICES.items():
+        service.async_register_platform_entity_service(
+            hass, DOMAIN, name, entity_domain="sensor", schema=schema, func=method
+        )
 
 
 def duration_label(duration: timedelta) -> str:
@@ -245,6 +272,23 @@ class VoiceTimerSensor(SensorEntity):
         self._set(item)
         if self.hass is not None:
             self.async_write_ha_state()
+
+    # The actions: each is the list's own, so the app hears of it too.
+
+    async def async_pause(self) -> None:
+        await self.timer_list.async_pause_timer(self.item.timer_id)
+
+    async def async_resume(self) -> None:
+        await self.timer_list.async_unpause_timer(self.item.timer_id)
+
+    async def async_cancel(self) -> None:
+        await self.timer_list.async_cancel_timer(self.item.timer_id)
+
+    async def async_add_time(self, duration: timedelta) -> None:
+        await self.timer_list.async_add_time(self.item.timer_id, duration)
+
+    async def async_subtract_time(self, duration: timedelta) -> None:
+        await self.timer_list.async_add_time(self.item.timer_id, -duration)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

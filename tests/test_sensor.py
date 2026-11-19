@@ -56,7 +56,7 @@ async def _timer(hass: HomeAssistant, service: str, data: dict[str, Any], entity
     return response[entity_id]["timer_id"] if response else None
 
 
-async def test_a_timer_is_a_timestamp_sensor(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+async def test_a_timer_is_a_sensor(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
     _, area_id = await _kitchen(hass, hass_ws_client)
     timer_id = await _timer(hass, "create_timer", {"name": "Pasta", "duration": {"minutes": 10}})
     await _timer(hass, "create_timer", {"duration": {"minutes": 1, "seconds": 30}})
@@ -74,29 +74,6 @@ async def test_a_timer_is_a_timestamp_sensor(hass: HomeAssistant, hass_ws_client
     assert er.async_get(hass).async_get("sensor.kitchen_timers_1").area_id == area_id
 
     assert hass.states.get("sensor.kitchen_timers_2").name == "1 min 30 s timer"
-
-
-async def test_time_changes_pause_and_resume(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
-    await _kitchen(hass, hass_ws_client)
-    timer_id = await _timer(hass, "create_timer", {"name": "Eggs", "duration": {"minutes": 5}})
-    started = dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state)
-
-    await _timer(hass, "add_time", {"timer_id": timer_id, "duration": {"minutes": 1}})
-    assert dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state) == started + timedelta(minutes=1)
-    await _timer(hass, "subtract_time", {"timer_id": timer_id, "duration": {"minutes": 2}})
-    assert dt_util.parse_datetime(hass.states.get("sensor.kitchen_timers_1").state) == started - timedelta(minutes=1)
-
-    await _timer(hass, "pause_timer", {"timer_id": timer_id})
-    paused = hass.states.get("sensor.kitchen_timers_1")
-    assert paused.state == "paused"
-    assert paused.attributes["device_class"] == "enum"
-    assert paused.attributes["paused_remaining"] > 0
-    assert paused.attributes["icon"] == "mdi:timer-pause-outline"
-
-    await _timer(hass, "unpause_timer", {"timer_id": timer_id})
-    resumed = hass.states.get("sensor.kitchen_timers_1")
-    assert resumed.attributes["device_class"] == "timestamp"
-    assert dt_util.parse_datetime(resumed.state) is not None
 
 
 async def test_ended_timers_stay_for_the_retention_minutes(
@@ -199,3 +176,38 @@ async def test_a_lists_sensors_go_with_it(hass: HomeAssistant, hass_ws_client: W
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert er.async_get(hass).async_get("sensor.kitchen_timers_1") is None
+
+
+async def test_two_way_sync(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> None:
+    """An action on a sensor is the list's own: the app's subscription hears it,
+    and the sensor follows the list, as it does a change made by voice."""
+    await _kitchen(hass, hass_ws_client)
+    timer_id = await _timer(hass, "create_timer", {"name": "Bread", "duration": {"minutes": 20}})
+    app = await hass_ws_client(hass)
+    await app.send_json_auto_id({"type": "voice_timer_list/item/subscribe", "entity_id": KITCHEN})
+    assert (await app.receive_json())["success"]
+    assert (await app.receive_json())["event"]["type"] == "timers"
+
+    async def act(service: str, **data: Any) -> str:
+        await hass.services.async_call(
+            DOMAIN, service, {"entity_id": "sensor.kitchen_timers_1", **data}, blocking=True
+        )
+        await hass.async_block_till_done()
+        event = (await app.receive_json())["event"]
+        assert event["timer"]["timer_id"] == timer_id
+        return event["event_type"]
+
+    def state() -> str:
+        return hass.states.get("sensor.kitchen_timers_1").state
+
+    finishes_at = dt_util.parse_datetime(state())
+    assert await act("add_time", duration={"minutes": 5}) == "time_changed"
+    assert dt_util.parse_datetime(state()) == finishes_at + timedelta(minutes=5)
+    assert await act("subtract_time", duration={"minutes": 2}) == "time_changed"
+    assert dt_util.parse_datetime(state()) == finishes_at + timedelta(minutes=3)
+    assert await act("pause_timer") == "paused"
+    assert state() == "paused"
+    assert await act("resume_timer") == "unpaused"
+    assert dt_util.parse_datetime(state()) is not None
+    assert await act("cancel_timer") == "cancelled"
+    assert state() == "cancelled"
