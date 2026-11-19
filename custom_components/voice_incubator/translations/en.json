@@ -36,6 +36,23 @@
           "cancelled": "Cancelled"
         }
       }
+    },
+    "button": {
+      "pause": {
+        "name": "Pause {timer} timer"
+      },
+      "resume": {
+        "name": "Resume {timer} timer"
+      },
+      "cancel": {
+        "name": "Cancel {timer} timer"
+      },
+      "add_minute": {
+        "name": "Add 1 min to {timer} timer"
+      },
+      "subtract_minute": {
+        "name": "Take 1 min off {timer} timer"
+      }
     }
   },
   "exceptions": {

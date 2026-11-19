@@ -25,8 +25,8 @@ before sending an announcement, a call or music there, and follows the night
 mode switches' states to keep the satellites there dim and quiet.
 
 Each timer is also a sensor of its own (sensor.py), for dashboards, while the
-options say so, with actions to pause, resume, cancel it and add or take off
-time (``voice_incubator.pause_timer`` ...).
+options say so, with buttons and actions to pause, resume, cancel it and add
+or take off time (``voice_incubator.pause_timer`` ...).
 
 The app asks an LLM conversation agent with its answer streamed back as it is
 made, and has Home Assistant's TTS speak it a sentence at a time
@@ -56,7 +56,7 @@ from .timer_list import async_setup_timer_lists
 from .timer_list_const import DATA_COMPONENT
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.BUTTON, Platform.SENSOR, Platform.SWITCH]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:

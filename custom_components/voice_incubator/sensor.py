@@ -7,13 +7,16 @@ numbered slots (``sensor.kitchen_timers_1``, ``_2`` ...), freed when the timer
 goes, so entity ids stay put and the entity registry stays small. A finished
 or cancelled timer stays for the options' retention minutes.
 
-Each sensor can also be controlled (``voice_incubator.pause_timer`` and the
-rest, below): the voice_timer_list actions, aimed at a sensor instead of a list
-and a timer id, for dashboard buttons. They call the list, whose change reaches
-the app and the sensor alike.
+Each sensor can also be controlled, by its buttons (``button.kitchen_timers_1_pause``
+...: unavailable when they don't apply) or by actions (``voice_incubator.pause_timer``
+and the rest, below), the voice_timer_list actions aimed at a sensor instead
+of a list and a timer id. Both call the list, whose change reaches the app and
+the sensor alike. The buttons live here too; button.py only hands over their
+platform.
 
-To remove the feature: delete this file, Platform.SENSOR, async_setup_services,
-the options flow and services.yaml's actions.
+To remove the feature: delete this file and button.py, Platform.SENSOR and
+Platform.BUTTON, async_setup_services, the options flow and services.yaml's
+actions.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.components.button import ButtonEntity
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback, split_entity_id
@@ -33,6 +37,7 @@ from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
     EntityPlatform,
     async_get_current_platform,
+    async_get_platforms,
 )
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -52,8 +57,9 @@ from .satellites import VoiceIncubatorConfigEntry
 from .timer_list import TimerItem, TimerListEntity
 from .timer_list_const import DATA_COMPONENT, DOMAIN as TIMER_LIST_DOMAIN, TimerStatus
 
-SLOT_UNIQUE_ID = re.compile(r"_timers_timer_\d+$")
-"""A timer sensor's unique id: its list's (``..._timers``), then its slot."""
+SLOT_UNIQUE_ID = re.compile(r"_timers_timer_\d+(_[a-z_]+)?$")
+"""A timer sensor's unique id: its list's (``..._timers``), then its slot; a
+button's, then its action."""
 
 ENDED = (TimerStatus.FINISHED, TimerStatus.CANCELLED)
 STATES = [TimerStatus.PAUSED.value, *(s.value for s in ENDED)]
@@ -74,6 +80,16 @@ SERVICES: dict[str, tuple[dict, str]] = {
 }
 """Each action on a timer sensor, and the sensor's method it calls."""
 
+LIVE = (TimerStatus.ACTIVE, TimerStatus.PAUSED)
+BUTTONS: dict[str, tuple[str, tuple[TimerStatus, ...]]] = {
+    "pause": ("mdi:pause", (TimerStatus.ACTIVE,)),
+    "resume": ("mdi:play", (TimerStatus.PAUSED,)),
+    "cancel": ("mdi:close", LIVE),
+    "add_minute": ("mdi:plus", LIVE),
+    "subtract_minute": ("mdi:minus", LIVE),
+}
+"""Each timer's buttons: icon, and the statuses it is available in."""
+
 type Key = tuple[str, str]
 """A timer sensor's list entity id and timer id."""
 
@@ -87,7 +103,7 @@ async def async_setup_entry(
     # Timers do not survive a restart, so no sensor left from before has one.
     entities = er.async_get(hass)
     for registered in er.async_entries_for_config_entry(entities, entry.entry_id):
-        if registered.domain == "sensor" and SLOT_UNIQUE_ID.search(registered.unique_id):
+        if registered.domain in ("sensor", "button") and SLOT_UNIQUE_ID.search(registered.unique_id):
             entities.async_remove(registered.entity_id)
     TimerSensors(hass, entry, async_get_current_platform()).async_start()
 
@@ -99,6 +115,15 @@ def async_setup_services(hass: HomeAssistant) -> None:
         service.async_register_platform_entity_service(
             hass, DOMAIN, name, entity_domain="sensor", schema=schema, func=method
         )
+
+
+async def async_setup_buttons(
+    hass: HomeAssistant,
+    entry: VoiceIncubatorConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Nothing to add: TimerSensors adds each timer's buttons with its sensor,
+    to this platform."""
 
 
 def duration_label(duration: timedelta) -> str:
@@ -190,6 +215,26 @@ class TimerSensors:
                 added.append(sensor)
             if added:
                 await self.platform.async_add_entities(added)
+            if (buttons_platform := self._buttons_platform()) is not None:
+                buttons = [
+                    button
+                    for sensor in self._sensors.values()
+                    if not sensor.buttons
+                    for button in sensor.add_buttons()
+                ]
+                if buttons:
+                    await buttons_platform.async_add_entities(buttons)
+
+    def _buttons_platform(self) -> EntityPlatform | None:
+        """This entry's button platform, once it is there."""
+        return next(
+            (
+                platform
+                for platform in async_get_platforms(self.hass, DOMAIN)
+                if platform.domain == "button" and platform.config_entry is self.entry
+            ),
+            None,
+        )
 
     @callback
     def _follow(self, lists: dict[str, TimerListEntity]) -> None:
@@ -204,16 +249,19 @@ class TimerSensors:
                 self._lists[entity_id] = (timer_list, timer_list.async_subscribe_updates(self.async_schedule_sync))
 
     async def _async_remove(self, sensor: VoiceTimerSensor) -> None:
-        """Out of Home Assistant and the entity registry, freeing its slot."""
-        if sensor.hass is not None:
-            await sensor.async_remove(force_remove=True)
+        """Out of Home Assistant and the entity registry, with its buttons,
+        freeing its slot."""
+        for entity in (sensor, *sensor.buttons):
+            if entity.hass is not None:
+                await entity.async_remove(force_remove=True)
         self._unregister(sensor)
 
     @callback
     def _unregister(self, sensor: VoiceTimerSensor) -> None:
         entities = er.async_get(self.hass)
-        if (entity_id := entities.async_get_entity_id("sensor", DOMAIN, sensor.unique_id or "")) is not None:
-            entities.async_remove(entity_id)
+        for domain, entity in (("sensor", sensor), *(("button", button) for button in sensor.buttons)):
+            if (entity_id := entities.async_get_entity_id(domain, DOMAIN, entity.unique_id or "")) is not None:
+                entities.async_remove(entity_id)
 
     @callback
     def _async_stop(self) -> None:
@@ -240,6 +288,7 @@ class VoiceTimerSensor(SensorEntity):
     def __init__(self, timer_list: TimerListEntity, item: TimerItem, slot: int) -> None:
         self.timer_list = timer_list
         self.slot = slot
+        self.buttons: list[VoiceTimerButton] = []
         self._attr_unique_id = f"{timer_list.unique_id}_timer_{slot}"
         self.entity_id = f"sensor.{split_entity_id(timer_list.entity_id)[1]}_{slot}"
         self._attr_device_info = timer_list.device_info
@@ -267,11 +316,16 @@ class VoiceTimerSensor(SensorEntity):
             "timer_list": self.timer_list.entity_id,
         }
 
+    def add_buttons(self) -> list[VoiceTimerButton]:
+        self.buttons = [VoiceTimerButton(self, action) for action in BUTTONS]
+        return self.buttons
+
     @callback
     def async_update_item(self, item: TimerItem) -> None:
         self._set(item)
-        if self.hass is not None:
-            self.async_write_ha_state()
+        for entity in (self, *self.buttons):
+            if entity.hass is not None:
+                entity.async_write_ha_state()
 
     # The actions: each is the list's own, so the app hears of it too.
 
@@ -292,16 +346,60 @@ class VoiceTimerSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        # An area's list is in its area on no device: put its timers there too.
-        entities = er.async_get(self.hass)
-        if (
-            self.device_info is None
-            and self.registry_entry is not None
-            and self.registry_entry.area_id is None
-            and (timer_list := entities.async_get(self.timer_list.entity_id)) is not None
-            and timer_list.area_id is not None
-        ):
-            entities.async_update_entity(self.entity_id, area_id=timer_list.area_id)
+        _put_in_area(self, self.timer_list)
+
+
+class VoiceTimerButton(ButtonEntity):
+    """One of a timer's actions, unavailable while it doesn't apply."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
+    def __init__(self, sensor: VoiceTimerSensor, action: str) -> None:
+        self.sensor = sensor
+        self.action = action
+        self._attr_unique_id = f"{sensor.unique_id}_{action}"
+        self.entity_id = f"button.{split_entity_id(sensor.entity_id)[1]}_{action}"
+        self._attr_device_info = sensor.device_info
+        self._attr_translation_key = action
+        self._attr_translation_placeholders = {
+            "timer": sensor.item.name or duration_label(sensor.item.created_duration)
+        }
+        self._attr_icon, self._statuses = BUTTONS[action]
+
+    @property
+    def available(self) -> bool:
+        return self.sensor.item.status in self._statuses
+
+    async def async_press(self) -> None:
+        sensor = self.sensor
+        if self.action == "pause":
+            await sensor.async_pause()
+        elif self.action == "resume":
+            await sensor.async_resume()
+        elif self.action == "cancel":
+            await sensor.async_cancel()
+        elif self.action == "add_minute":
+            await sensor.async_add_time(timedelta(minutes=1))
+        else:
+            await sensor.async_subtract_time(timedelta(minutes=1))
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        _put_in_area(self, self.sensor.timer_list)
+
+
+def _put_in_area(entity: SensorEntity | ButtonEntity, timer_list: TimerListEntity) -> None:
+    """An area's list is in its area on no device: put its timers there too."""
+    entities = er.async_get(entity.hass)
+    if (
+        entity.device_info is None
+        and entity.registry_entry is not None
+        and entity.registry_entry.area_id is None
+        and (registered := entities.async_get(timer_list.entity_id)) is not None
+        and registered.area_id is not None
+    ):
+        entities.async_update_entity(entity.entity_id, area_id=registered.area_id)
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -758,68 +758,34 @@ Both options are on the integration's **Configure** page (Settings > Devices
 finished timers** (5 minutes by default, or 0 to remove them at once).
 Changing either doesn't touch the timers that are running.
 
-A timer sensor has the voice commands' actions: `voice_incubator.pause_timer`,
-`resume_timer`, `cancel_timer`, `add_time` and `subtract_time` (with a
-`duration`), aimed at the sensor. They act on the timer itself, so the
-satellites follow as if it had been said. A card with buttons for the first
-timer in the Kitchen, shown while there is one:
+Each timer has **buttons** beside its sensor, numbered the same way:
+`button.kitchen_timers_1_pause`, `_resume`, `_cancel`, `_add_minute` and
+`_subtract_minute`. A button that doesn't apply -- resume on a running timer,
+any of them on a finished one -- is unavailable, so a dashboard greys it out.
+They act on the timer itself, so the satellites follow as if it had been said.
+For automations, the same actions take a timer sensor:
+`voice_incubator.pause_timer`, `resume_timer`, `cancel_timer`, `add_time` and
+`subtract_time` (with a `duration`).
+
+A dashboard section that lists entities by themselves shows each timer and
+its buttons as they come and go. A card of your own for one slot can hide
+while the slot is empty, instead of saying the entity isn't found -- an entity
+that isn't there counts as unavailable:
 
 ```yaml
-type: conditional
-conditions:
+type: entities
+title: Kitchen timer 1
+visibility:
   - condition: state
     entity: sensor.kitchen_timers_1
     state_not: unavailable
-card:
-  type: vertical-stack
-  cards:
-    - type: tile
-      entity: sensor.kitchen_timers_1
-    - type: horizontal-stack
-      cards:
-        - type: button
-          icon: mdi:pause
-          tap_action:
-            action: perform-action
-            perform_action: voice_incubator.pause_timer
-            target:
-              entity_id: sensor.kitchen_timers_1
-        - type: button
-          icon: mdi:play
-          tap_action:
-            action: perform-action
-            perform_action: voice_incubator.resume_timer
-            target:
-              entity_id: sensor.kitchen_timers_1
-        - type: button
-          icon: mdi:plus
-          name: 1 min
-          tap_action:
-            action: perform-action
-            perform_action: voice_incubator.add_time
-            target:
-              entity_id: sensor.kitchen_timers_1
-            data:
-              duration:
-                minutes: 1
-        - type: button
-          icon: mdi:minus
-          name: 1 min
-          tap_action:
-            action: perform-action
-            perform_action: voice_incubator.subtract_time
-            target:
-              entity_id: sensor.kitchen_timers_1
-            data:
-              duration:
-                minutes: 1
-        - type: button
-          icon: mdi:close
-          tap_action:
-            action: perform-action
-            perform_action: voice_incubator.cancel_timer
-            target:
-              entity_id: sensor.kitchen_timers_1
+entities:
+  - sensor.kitchen_timers_1
+  - button.kitchen_timers_1_pause
+  - button.kitchen_timers_1_resume
+  - button.kitchen_timers_1_add_minute
+  - button.kitchen_timers_1_subtract_minute
+  - button.kitchen_timers_1_cancel
 ```
 
 ### Alarms and reminders
