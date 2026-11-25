@@ -36,6 +36,20 @@
           "cancelled": "Cancelled"
         }
       }
+    },
+    "button": {
+      "pause_resume": {
+        "name": "Pause or resume {timer} timer"
+      },
+      "cancel": {
+        "name": "Cancel {timer} timer"
+      },
+      "add_minute": {
+        "name": "Add 1 min to {timer} timer"
+      },
+      "subtract_minute": {
+        "name": "Take 1 min off {timer} timer"
+      }
     }
   },
   "exceptions": {
@@ -67,6 +81,40 @@
     "timer_unpaused": {
       "description": "Triggers when a timer is resumed on a timer list.",
       "name": "Timer resumed"
+    }
+  },
+  "services": {
+    "pause_timer": {
+      "name": "Pause timer",
+      "description": "Pauses a running timer."
+    },
+    "resume_timer": {
+      "name": "Resume timer",
+      "description": "Resumes a paused timer."
+    },
+    "cancel_timer": {
+      "name": "Cancel timer",
+      "description": "Cancels a timer without finishing it."
+    },
+    "add_time": {
+      "name": "Add time",
+      "description": "Adds time to a timer.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "How much time to add."
+        }
+      }
+    },
+    "subtract_time": {
+      "name": "Subtract time",
+      "description": "Takes time off a timer. Taking off more than is left finishes it.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "How much time to take off."
+        }
+      }
     }
   }
 }

@@ -758,6 +758,162 @@ Both options are on the integration's **Configure** page (Settings > Devices
 finished timers** (5 minutes by default, or 0 to remove them at once).
 Changing either doesn't touch the timers that are running.
 
+Each timer has **buttons** beside its sensor, numbered the same way:
+`button.kitchen_timers_1_pause_resume`, `_cancel`, `_add_minute` and
+`_subtract_minute`. Pause or resume is one button: it pauses a running timer
+and resumes a paused one, and its icon is pause or play to match. A button
+that doesn't apply -- any of them on a finished timer -- is unavailable, so a
+dashboard greys it out.
+They act on the timer itself, so the satellites follow as if it had been said.
+For automations, the same actions take a timer sensor:
+`voice_incubator.pause_timer`, `resume_timer`, `cancel_timer`, `add_time` and
+`subtract_time` (with a `duration`).
+
+A card of your own can show an area's timers one under another, each with its
+buttons beside it. Each timer is a row that hides while its number is empty
+(an entity that isn't there counts as unavailable), so only the timers that
+are running, paused or just ended show. A button card without its name shows
+only the icon, not the time the button was last pressed, and `toggle` on a
+button presses it. Three numbers are enough for most kitchens; for more, copy
+a row and change its number:
+
+```yaml
+type: vertical-stack
+cards:
+  - type: horizontal-stack
+    visibility:
+      - condition: state
+        entity: sensor.kitchen_timers_1
+        state_not: unavailable
+    cards:
+      - type: tile
+        entity: sensor.kitchen_timers_1
+        vertical: false
+      - type: horizontal-stack
+        cards:
+          - type: button
+            entity: button.kitchen_timers_1_pause_resume
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_1_subtract_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_1_add_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_1_cancel
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+  - type: horizontal-stack
+    visibility:
+      - condition: state
+        entity: sensor.kitchen_timers_2
+        state_not: unavailable
+    cards:
+      - type: tile
+        entity: sensor.kitchen_timers_2
+        vertical: false
+      - type: horizontal-stack
+        cards:
+          - type: button
+            entity: button.kitchen_timers_2_pause_resume
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_2_subtract_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_2_add_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_2_cancel
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+  - type: horizontal-stack
+    visibility:
+      - condition: state
+        entity: sensor.kitchen_timers_3
+        state_not: unavailable
+    cards:
+      - type: tile
+        entity: sensor.kitchen_timers_3
+        vertical: false
+      - type: horizontal-stack
+        cards:
+          - type: button
+            entity: button.kitchen_timers_3_pause_resume
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_3_subtract_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_3_add_minute
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.kitchen_timers_3_cancel
+            show_name: false
+            show_icon: true
+            tap_action:
+              action: toggle
+```
+
+To hide a whole dashboard section while there are no timers, give the
+section (**Edit section** > **Visibility**, or its YAML) a condition that
+any timer number is there. A finished or cancelled timer keeps its sensor for
+**Keep finished timers**, so the section stays until the last one goes. The
+timer list's own state counts only running timers, so it would hide the
+section as soon as the last one finished.
+
+```yaml
+type: grid
+visibility:
+  - condition: or
+    conditions:
+      - condition: state
+        entity: sensor.kitchen_timers_1
+        state_not: unavailable
+      - condition: state
+        entity: sensor.kitchen_timers_2
+        state_not: unavailable
+      - condition: state
+        entity: sensor.kitchen_timers_3
+        state_not: unavailable
+cards:
+  - type: heading
+    heading: Kitchen timers
+  # The card above
+```
+
 ### Alarms and reminders
 
 Alarms and reminders with a time are events on a **Local
