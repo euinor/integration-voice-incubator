@@ -10,6 +10,34 @@
       "single_instance_allowed": "Voice Incubator is already set up."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Timer sensors",
+        "description": "Each Voice Incubator timer as a sensor of its own, for dashboards.",
+        "data": {
+          "expose_timer_sensors": "Timer sensors",
+          "retention_minutes": "Keep finished timers"
+        },
+        "data_description": {
+          "expose_timer_sensors": "A sensor for each timer, numbered per timer list (sensor.kitchen_timers_1, ...).",
+          "retention_minutes": "Minutes a finished or cancelled timer's sensor stays before it is removed."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "timer": {
+        "name": "{duration} timer",
+        "state": {
+          "paused": "Paused",
+          "finished": "Finished",
+          "cancelled": "Cancelled"
+        }
+      }
+    }
+  },
   "exceptions": {
     "timer_not_found": {
       "message": "Unable to find timer with id: {timer_id}"

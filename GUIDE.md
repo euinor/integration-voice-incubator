@@ -736,6 +736,28 @@ until someone says **"stop"** -- the satellite listens for it while ringing
 -- or "Okay Nabu" anything, or presses the center button, or 15 minutes
 pass. Timers are held in memory by Home Assistant, so a restart loses them.
 
+### Timer sensors
+
+Each timer is also a **sensor** in Home Assistant, for dashboards. A timer
+list's timers are numbered as they start (`sensor.kitchen_timers_1`,
+`sensor.kitchen_timers_2`, ...), and a number is used again once its timer is
+gone. An area's timers are in the area, and a satellite's own are on its
+device. A sensor is named after its timer, or after the timer's length
+("10 min timer").
+
+While a timer runs, its sensor's state is when it finishes, which the
+dashboard shows as the time left ("in 4 minutes"). Otherwise the state is
+**Paused**, **Finished** or **Cancelled**. A finished or cancelled timer's
+sensor stays for a few minutes and then goes. Its attributes are `timer_id`,
+`status`, `created_duration` and `total_duration` (in seconds), `finishes_at`,
+`ended_at`, `paused_remaining` (in seconds, while paused) and `timer_list`
+(the list it is on).
+
+Both options are on the integration's **Configure** page (Settings > Devices
+& services > Voice Incubator): **Timer sensors** (on by default) and **Keep
+finished timers** (5 minutes by default, or 0 to remove them at once).
+Changing either doesn't touch the timers that are running.
+
 ### Alarms and reminders
 
 Alarms and reminders with a time are events on a **Local

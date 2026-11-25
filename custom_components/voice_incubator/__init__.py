@@ -24,6 +24,9 @@ switch (switch.py); the app asks which are on (``voice_incubator/do_not_disturb`
 before sending an announcement, a call or music there, and follows the night
 mode switches' states to keep the satellites there dim and quiet.
 
+Each timer is also a sensor of its own (sensor.py), for dashboards, while the
+options say so.
+
 The app asks an LLM conversation agent with its answer streamed back as it is
 made, and has Home Assistant's TTS speak it a sentence at a time
 (streams.py).
@@ -51,7 +54,7 @@ from .timer_list import async_setup_timer_lists
 from .timer_list_const import DATA_COMPONENT
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-PLATFORMS = [Platform.SWITCH]
+PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -67,8 +70,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: VoiceIncubatorConfigEntry) -> bool:
-    """Set up the satellites, their timer lists and their areas' do not
-    disturb switches."""
+    """Set up the satellites, their timer lists and timer sensors, and their
+    areas' do not disturb switches."""
     satellites = Satellites(hass, entry)
     await satellites.async_load()
     entry.runtime_data = satellites
@@ -80,7 +83,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: VoiceIncubatorConfigEntr
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: VoiceIncubatorConfigEntry) -> bool:
-    """Unload the timer lists (their timers are lost) and the switches."""
+    """Unload the timer lists (their timers are lost), their sensors and the
+    switches."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
